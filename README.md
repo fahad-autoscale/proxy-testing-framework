@@ -1,173 +1,346 @@
 # Proxy Testing Framework
 
-A simplified framework for testing residential proxy performance with Cars For Sale (CFS) domains, featuring Selenium and nodriver implementations with integrated captcha detection and proxy rotation.
+A comprehensive framework for testing residential proxy performance with car dealership websites, featuring advanced multi-domain crawling with integrated captcha detection and proxy rotation.
 
-## Features
+## 🚀 Project Status
 
-- **Dual Crawler Support**: Both Selenium (undetected-chromedriver) and nodriver implementations
-- **Integrated Captcha Detection**: Built-in detection for DataDome, Cloudflare, reCAPTCHA, hCAPTCHA, and generic blocks
-- **Proxy Management**: Automatic proxy rotation when captcha blocks are detected
-- **Human-like Behavior**: Random delays, mouse movements, and scrolling to avoid detection
-- **Parallel Processing**: Test multiple domains simultaneously with unique proxy assignments
+- **✅ Nodriver Implementation**: **COMPLETE** - Production ready with multi-domain support
+- **🔄 Selenium Implementation**: Work in progress - Basic functionality available
+- **📋 Framework Core**: Complete with metrics and proxy management
 
-## Environment Setup
+## ✨ Key Features
 
-### Python Version
-- **Required**: Python 3.11.9
-- **Virtual Environment**: `env311` (included)
+### Nodriver Crawler (Complete)
+- **Multi-Domain Support**: Process multiple car dealership websites simultaneously
+- **Dynamic URL Extraction**: Automatic domain detection and URL construction
+- **Advanced Pagination**: HTML parsing with custom URL generation
+- **Fresh Browser Sessions**: New session per listing to avoid detection
+- **Parallel Processing**: Configurable batch processing (up to 8 concurrent)
+- **Comprehensive Data Extraction**: VIN, mileage, price, specifications with robust parsing
+- **Data Export**: JSON and CSV output with detailed vehicle records
 
-### Dependencies
-```bash
-# Activate virtual environment
-source env311/bin/activate
+### Framework Features
+- **Integrated Captcha Detection**: DataDome, Cloudflare, reCAPTCHA, hCAPTCHA, and generic blocks
+- **Proxy Management**: Automatic rotation with 10 residential proxies
+- **Human-like Behavior**: Random delays, mouse movements, and natural timing
+- **Error Handling**: Robust cleanup and recovery mechanisms
+- **Metrics Collection**: Comprehensive performance tracking
 
-# Install dependencies
-pip install -r requirements.txt
-```
+## 🛠️ Environment Setup
 
 ### System Requirements
-- Linux environment with X11 display support
-- Chrome browser installed
-- DISPLAY environment variable set to `:1`
+- **Python**: 3.11+ (tested with 3.11.9)
+- **OS**: Linux with X11 display support
+- **Browser**: Chrome browser installed
+- **Display**: X11 forwarding or virtual display
 
-## Configuration
+### Installation
 
-### Test Domains
-- `https://www.jeautoworks.com`
-- `https://www.myprestigecar.com` 
-- `https://www.adeautonj.com`
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/fahad-autoscale/proxy-testing-framework.git
+   cd proxy-testing-framework
+   ```
 
-### Proxy Configuration
-10 IP-authenticated residential proxies:
-- `http://p100.dynaprox.com:8900`
-- `http://p100.dynaprox.com:8902` through `http://p100.dynaprox.com:8910`
+2. **Create virtual environment**:
+   ```bash
+   python3.11 -m venv env311
+   source env311/bin/activate
+   ```
 
-## Usage
+3. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-### Quick Start
+4. **Set up display environment**:
+   ```bash
+   export DISPLAY=:1
+   ```
+
+## 🎯 Quick Start (Nodriver - Complete)
+
+### Basic Usage
 ```bash
-cd /home/proxy-testing-framework
+# Activate environment
 source env311/bin/activate
 export DISPLAY=:1
-python run_tests.py
+
+# Run multi-domain crawler (default: jeautoworks.com + myprestigecar.com)
+python test_nodriver.py
 ```
 
-### Individual Crawler Tests
+### Advanced Usage
+
+#### Single Domain
 ```bash
-# Test Selenium only
-python -c "from selenium_test_crawler import SeleniumTestCrawler; crawler = SeleniumTestCrawler(['https://www.jeautoworks.com'], ['http://p100.dynaprox.com:8900'], max_listings=5); crawler.run_parallel_tests()"
+# Test only jeautoworks.com
+python test_nodriver.py --domains https://www.jeautoworks.com/
 
-# Test nodriver only
-python -c "import asyncio; from nodriver_test_crawler import NodriverTestCrawler; asyncio.run(NodriverTestCrawler(['https://www.jeautoworks.com'], ['http://p100.dynaprox.com:8900'], max_listings=5).run_parallel_tests())"
+# Test only myprestigecar.com
+python test_nodriver.py --domains https://www.myprestigecar.com/
 ```
 
-## Core Components
+#### Processing Modes
+```bash
+# Parallel processing (default)
+python test_nodriver.py --mode parallel --max-parallel 2
 
-### 1. Proxy Test Framework (`proxy_test_framework.py`)
-- `ProxyManager`: Handles proxy assignment and rotation
-- `CrawlMetrics`: Tracks comprehensive crawl statistics
-- Base classes for Selenium and nodriver implementations
+# Sequential processing
+python test_nodriver.py --mode sequential
+```
 
-### 2. Selenium Crawler (`selenium_test_crawler.py`)
-- Uses undetected-chromedriver for stealth browsing
-- Threading-based parallel execution
-- Integrated captcha detection
-- Unique Chrome user data directories for isolation
+#### Custom Configuration
+```bash
+# Limit listings per domain
+python test_nodriver.py --max-listings 50
 
-### 3. Nodriver Crawler (`nodriver_test_crawler.py`)
-- Async/await based implementation
-- Advanced human-like behavior simulation
-- Integrated captcha detection
-- Robust error handling and proxy rotation
+# Run in headless mode
+python test_nodriver.py --headless
 
-### 4. Test Runner (`run_tests.py`)
-- Simple test orchestrator
-- Runs both Selenium and nodriver tests
-- Console output with results
+# Custom domains
+python test_nodriver.py --domains https://www.jeautoworks.com/ https://www.myprestigecar.com/ https://example.com/
+```
 
-## Captcha Detection
+## 📊 Supported Domains
 
-Each crawler includes built-in captcha detection for:
+### Currently Supported
+- **✅ jeautoworks.com**: Complete support with pagination
+- **✅ myprestigecar.com**: Complete support with pagination
+
+### Configuration
+The framework automatically detects and adapts to different car dealership websites. Each domain gets:
+- Independent crawler instance
+- Separate proxy assignment
+- Domain-specific URL extraction
+- Individual data export files
+
+## 🔧 Proxy Configuration
+
+### Residential Proxies
+10 IP-authenticated residential proxies:
+```
+http://p100.dynaprox.com:8900
+http://p100.dynaprox.com:8902
+http://p100.dynaprox.com:8903
+http://p100.dynaprox.com:8904
+http://p100.dynaprox.com:8905
+http://p100.dynaprox.com:8906
+http://p100.dynaprox.com:8907
+http://p100.dynaprox.com:8908
+http://p100.dynaprox.com:8909
+http://p100.dynaprox.com:8910
+```
+
+### Proxy Management
+- **Automatic Rotation**: When captcha detected
+- **Load Distribution**: Proxies distributed across domains
+- **Health Monitoring**: Connection status tracking
+- **Fallback Handling**: Graceful degradation
+
+## 📈 Data Extraction
+
+### Vehicle Information
+- **Basic Details**: Year, Make, Model, Title
+- **Pricing**: Current price and financing options
+- **Specifications**: Engine, Transmission, Drivetrain, Color
+- **Identification**: VIN number with validation
+- **Mileage**: Odometer reading with formatting
+- **Metadata**: Extraction timestamp, proxy used, domain source
+
+### Output Formats
+- **JSON**: Complete vehicle records with metadata
+- **CSV**: Summary format for analysis
+- **Console**: Real-time progress and results
+
+## 🏗️ Architecture
+
+### Core Components
+
+#### 1. Multi-Domain Test Runner (`test_nodriver.py`)
+- **Command-line interface** with argparse
+- **Configurable processing modes** (parallel/sequential)
+- **Domain management** with independent crawler instances
+- **Comprehensive reporting** with success/failure tracking
+
+#### 2. Nodriver Crawler (`nodriver_test_crawler.py`)
+- **Dynamic URL extraction** with domain detection
+- **Advanced pagination** using HTML parsing
+- **Fresh browser sessions** per listing
+- **Parallel processing** with configurable batch sizes
+- **Robust data extraction** with multiple fallback patterns
+
+#### 3. Framework Core (`proxy_test_framework.py`)
+- **Proxy management** with rotation logic
+- **Metrics collection** with detailed tracking
+- **Base classes** for crawler implementations
+- **Error handling** and recovery mechanisms
+
+### File Structure
+```
+proxy-testing-framework/
+├── test_nodriver.py              # 🎯 Main multi-domain test runner (COMPLETE)
+├── nodriver_test_crawler.py      # 🎯 Nodriver implementation (COMPLETE)
+├── proxy_test_framework.py       # Core framework classes
+├── selenium_test_crawler.py      # 🔄 Selenium implementation (WIP)
+├── run_tests.py                  # Simple test runner
+├── requirements.txt              # Python dependencies
+├── extracted_data/               # Output directory (auto-created)
+│   ├── vehicles_jeautoworks_com_*.json
+│   ├── vehicles_myprestigecar_com_*.json
+│   └── *.csv
+└── README.md                     # This file
+```
+
+## 🛡️ Anti-Detection Features
+
+### Captcha Detection
 - **DataDome**: IP-based protection with geo-blocking
 - **Cloudflare**: Challenge pages and bot detection
 - **reCAPTCHA**: Google's captcha system
 - **hCAPTCHA**: Alternative captcha service
 - **Generic Blocks**: Access denied, rate limiting, etc.
 
-Detection uses:
-- Keyword matching in page content and titles
-- Regex pattern matching
-- HTML length analysis (short pages often indicate blocks)
-- Confidence scoring with configurable thresholds
-
-## Human-like Behavior
-
+### Human-like Behavior
 - **Random Delays**: 2-8 seconds between actions
 - **Mouse Movements**: Simulated cursor movement
-- **Scrolling**: Random page scrolling
-- **Natural Timing**: Variable delays to mimic human interaction
+- **Scrolling**: Natural page scrolling patterns
+- **Reading Time**: Variable delays to mimic human interaction
+- **Browser Startup Delays**: 3-8 seconds to avoid detection
 
-## Test Flow
+### Session Management
+- **Fresh Sessions**: New browser instance per listing
+- **Profile Isolation**: Unique Chrome profiles
+- **Cleanup**: Proper browser termination
+- **Error Recovery**: Graceful handling of connection issues
 
-1. **Initialization**: Set up browsers with assigned proxies
-2. **Homepage Check**: Detect captcha on initial page load
-3. **Inventory Navigation**: Find and click "cars-for-sale" links
-4. **Listing Extraction**: Extract URLs from vehicle cards
-5. **Detail Page Crawling**: Navigate to individual listings
-6. **Data Extraction**: Extract vehicle information from detail pages
-7. **Captcha Monitoring**: Check for blocks every 3 listings
-8. **Proxy Rotation**: Switch proxies when captcha detected
-9. **Pagination**: Navigate through multiple pages
-10. **Metrics Collection**: Track all performance data
+## 📊 Performance Metrics
 
-## Output
+### Tracking
+- **Success Rate**: Percentage of successful extractions
+- **Captcha Blocks**: Detection and rotation events
+- **Proxy Usage**: Distribution and health status
+- **Processing Time**: Per-listing and total duration
+- **Data Quality**: Extraction completeness and accuracy
 
-### Console Output
-- Real-time progress updates
-- Detailed error reporting
-- Captcha detection alerts
-- Proxy rotation notifications
-- Final results summary
+### Output
+- **Real-time Console**: Progress updates and alerts
+- **Detailed Logs**: Debug information and error traces
+- **Summary Reports**: Domain-wise success statistics
+- **Data Files**: Structured vehicle records
 
-## Architecture
+## 🔄 Work in Progress
 
-```
-proxy-testing-framework/
-├── proxy_test_framework.py    # Core framework classes
-├── selenium_test_crawler.py   # Selenium implementation with captcha detection
-├── nodriver_test_crawler.py   # Nodriver implementation with captcha detection
-├── run_tests.py              # Simple test runner
-├── requirements.txt          # Python dependencies
-└── README.md                # This file
-```
+### Selenium Implementation
+- **Status**: Basic functionality available
+- **Features**: Threading-based parallel execution
+- **Limitations**: Single-domain support, basic error handling
+- **Future**: Multi-domain support, enhanced data extraction
 
-## Future Additions
-
-- **Playwright Crawler**: Additional crawler implementation
+### Planned Enhancements
+- **Playwright Crawler**: Additional implementation option
 - **Enhanced Metrics**: More detailed performance analysis
 - **Configuration Files**: External configuration management
-- **Results Export**: JSON/CSV report generation
+- **Web Interface**: Dashboard for monitoring and control
 
-## Troubleshooting
+## 🚨 Troubleshooting
 
 ### Common Issues
 
-1. **Chrome Version Mismatch**
-   - Ensure ChromeDriver matches Chrome version
-   - Framework auto-detects version 139
+1. **Display Problems**
+   ```bash
+   export DISPLAY=:1
+   # Or for headless mode
+   python test_nodriver.py --headless
+   ```
 
-2. **Display Issues**
-   - Set `export DISPLAY=:1`
-   - Ensure X11 forwarding is enabled
+2. **Chrome Version Issues**
+   - Framework auto-detects Chrome version 139
+   - Ensure Chrome is installed and accessible
 
 3. **Proxy Connection**
-   - Verify proxy credentials
-   - Check network connectivity
+   - Verify proxy credentials and connectivity
+   - Check network firewall settings
 
 4. **Captcha Detection**
    - Review console output for detection details
    - Adjust confidence thresholds if needed
+   - Consider using different proxies
 
-## License
+5. **Memory Issues**
+   - Reduce batch size: `--max-parallel 1`
+   - Limit listings: `--max-listings 10`
+   - Use sequential mode: `--mode sequential`
+
+### Debug Mode
+```bash
+# Enable detailed logging
+python test_nodriver.py --domains https://www.jeautoworks.com/ --max-listings 5
+```
+
+## 📝 Example Output
+
+### Console Output
+```
+================================================================================
+MULTI-DOMAIN NODRIVER CRAWLER
+================================================================================
+Domains: ['https://www.jeautoworks.com/', 'https://www.myprestigecar.com/']
+Processing mode: parallel
+Max parallel domains: 2
+Max listings per domain: 100
+Headless mode: False
+Available proxies: 10
+
+================================================================================
+COMPREHENSIVE RESULTS SUMMARY
+================================================================================
+
+Domain: https://www.jeautoworks.com/
+------------------------------------------------------------
+  Status: SUCCESS
+  Listings extracted: 38
+  Captcha blocked: False
+  Extracted vehicles: 38
+  Sample vehicles:
+    1. 2010 Dodge Grand Caravan - $2,995 - 110,000 miles - VIN: 2D4RN4DE9AR364711
+    2. 2003 Subaru Outback - $2,995 - 169,000 miles - VIN: 4S3BH806037660569
+
+Domain: https://www.myprestigecar.com/
+------------------------------------------------------------
+  Status: SUCCESS
+  Listings extracted: 27
+  Captcha blocked: False
+  Extracted vehicles: 27
+  Sample vehicles:
+    1. 2022 Cadillac XT5 - $32,457 - 41,459 miles - VIN: 1GYKNDRS1NZ104340
+    2. 2019 INFINITI Q50 - $16,746 - 116,317 miles - VIN: JN1EV7AP2KM512241
+
+================================================================================
+OVERALL SUMMARY
+================================================================================
+Total domains processed: 2
+Successful domains: 2
+Failed domains: 0
+Total vehicles extracted: 65
+Data files saved to: extracted_data/ directory
+```
+
+## 📄 License
 
 This framework is designed for testing and research purposes. Ensure compliance with target website terms of service and applicable laws.
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
+
+## 📞 Support
+
+For issues and questions:
+- Create an issue on GitHub
+- Check the troubleshooting section
+- Review console output for error details
