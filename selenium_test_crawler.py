@@ -81,18 +81,19 @@ class SeleniumTestCrawler(SeleniumTestFramework):
             url_lower = url.lower() if url else ""
             
             # Check for very short pages (likely captcha/block pages)
-            if len(html) < 5000:
+            if len(html) < 2000:  # Only check very short pages
                 captcha_indicators = [
-                    'cmsg', 'animation', 'opacity', 'keyframes', 'cfasync',
-                    'datadome', 'cloudflare', 'recaptcha', 'hcaptcha',
+                    'cmsg', 'cfasync', 'datadome', 'cloudflare', 'recaptcha', 'hcaptcha',
                     'verify', 'human', 'robot', 'blocked', 'access denied'
                 ]
                 
                 captcha_found = any(indicator in text for indicator in captcha_indicators)
                 
                 if captcha_found:
+                    print(f"[DEBUG] Captcha indicators found in short page: {captcha_found}")
                     return True, "generic_block", 0.9
-                elif len(html) < 2000:
+                else:
+                    print(f"[DEBUG] Short page but no captcha indicators found")
                     return True, "generic_block", 0.7
             
             # Score each captcha type

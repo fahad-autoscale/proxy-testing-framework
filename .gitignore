@@ -9,3 +9,5 @@
 *.pyzwz
 __pycache__
 env311
+debug_pages
+extracted_data
