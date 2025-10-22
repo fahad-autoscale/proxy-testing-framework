@@ -1,24 +1,19 @@
 #!/usr/bin/env python3
 """
-Multi-domain nodriver test with configurable parallel/sequential processing
+Multi-domain Selenium test with configurable parallel/sequential processing
 """
 
 import asyncio
 import time
 import argparse
 from typing import List, Dict, Any
-from nodriver_test_crawler import NodriverTestCrawler
+from selenium_test_crawler import SeleniumTestCrawler
 
 # Configuration
 CONFIG = {
     'domains': [
-        # "https://www.gtxagroup.com/",
-        # "https://www.myautohaven.com/",
-        # "https://www.brubakersauto.com/",
-        # "https://www.autosourceomaha.com/",
-        "https://www.adeautonj.com/",
-        # "https://www.jeautoworks.com/",
-        # "https://www.myprestigecar.com/",
+        "https://www.jeautoworks.com/",
+        "https://www.myprestigecar.com/"
     ],
     'proxies': [
         'http://p100.dynaprox.com:8900',
@@ -45,7 +40,7 @@ async def process_single_domain(domain: str, proxy: str, max_listings: int, head
     print(f"{'='*80}")
     
     # Create a dedicated crawler for this domain
-    crawler = NodriverTestCrawler(
+    crawler = SeleniumTestCrawler(
         domains=[domain],
         proxies=CONFIG['proxies'],
         max_listings=max_listings,
@@ -234,11 +229,11 @@ async def main():
     """Main function with configurable domain processing"""
     # Set DISPLAY environment variable for Chrome
     import os
-    os.environ['DISPLAY'] = ':0'
+    os.environ['DISPLAY'] = ':1'
     print(f"[+] Set DISPLAY environment variable to :1")
     
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Multi-domain nodriver crawler test')
+    parser = argparse.ArgumentParser(description='Multi-domain Selenium crawler test')
     parser.add_argument('--domains', nargs='+', default=CONFIG['domains'], 
                        help='List of domains to crawl')
     parser.add_argument('--mode', choices=['parallel', 'sequential'], default=CONFIG['processing_mode'],
@@ -260,7 +255,7 @@ async def main():
     CONFIG['headless'] = args.headless
     
     print(f"\n{'='*80}")
-    print("MULTI-DOMAIN NODRIVER CRAWLER")
+    print("MULTI-DOMAIN SELENIUM CRAWLER")
     print(f"{'='*80}")
     print(f"Domains: {CONFIG['domains']}")
     print(f"Processing mode: {CONFIG['processing_mode']}")

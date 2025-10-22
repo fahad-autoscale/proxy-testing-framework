@@ -2,6 +2,10 @@ import undetected_chromedriver as uc
 import time
 import random
 import re
+import asyncio
+import json
+import os
+from datetime import datetime
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -13,12 +17,13 @@ from typing import Dict, List, Any, Optional, Tuple
 from proxy_test_framework import SeleniumTestFramework, CrawlMetrics
 
 class SeleniumTestCrawler(SeleniumTestFramework):
-    """Selenium-based crawler with metrics and proxy rotation"""
+    """Selenium-based crawler with comprehensive vehicle data extraction and pagination"""
     
-    def __init__(self, domains: List[str], proxies: List[str], max_listings: int = 30, headless: bool = False):
+    def __init__(self, domains: List[str], proxies: List[str], max_listings: int = 100, headless: bool = False):
         super().__init__(domains, proxies, max_listings)
         self.headless = headless
         self.temp_dirs = []  # Track temporary directories for cleanup
+        self.extracted_data = []  # Store extracted vehicle data
         
         # Captcha detection patterns
         self.captcha_patterns = {
@@ -49,22 +54,65 @@ class SeleniumTestCrawler(SeleniumTestFramework):
             }
         }
         
-        # Common selectors for car listings
-        self.listing_selectors = [
-            ".vehicle-card", ".inventory-item", ".car-listing", ".vehicle-item",
-            ".inventory-card", ".vehicle-listing", ".car-item", ".vehicle",
-            ".inventory-vehicle", ".listing-item", "[data-vehicle-id]",
-            "[class*='vehicle']", "[class*='inventory']", "[class*='listing']",
-            "[class*='car']", "tr[data-vehicle]", "tr.vehicle-row",
-            ".grid-item", ".col-vehicle"
-        ]
-        
         # Inventory navigation keywords
         self.inventory_keywords = [
             "inventory", "vehicles", "new vehicles", "used vehicles", 
             "cars", "trucks", "search inventory", "view inventory",
-            "new cars", "used cars", "pre-owned", "certified"
+            "new cars", "used cars", "pre-owned", "certified", "cars-for-sale"
         ]
+    
+    async def run_parallel_tests(self) -> Dict[str, Any]:
+        """Run parallel tests for all domains"""
+        results = {}
+        
+        for domain in self.domains:
+            print(f"\n[+] Starting Selenium test for {domain}")
+            
+            # Get initial proxy
+            initial_proxy = self.proxy_manager.get_next_proxy()
+            
+            try:
+                # Extract all listing URLs first
+                listing_urls = await self._extract_all_listing_urls(domain, initial_proxy)
+                
+                if not listing_urls:
+                    print(f"[!] No listing URLs found for {domain}")
+                    results[domain.replace('https://', '').replace('www.', '').replace('/', '')] = {
+                        'listings_extracted': 0,
+                        'captcha_blocked': False,
+                        'captcha_type': 'none',
+                        'errors': ['No listing URLs found']
+                    }
+                    continue
+                
+                print(f"[+] Found {len(listing_urls)} listing URLs for {domain}")
+                
+                # Process listings in parallel
+                metrics = self.create_metrics(domain, initial_proxy, "selenium")
+                successful_extractions = await self._process_listings_in_parallel(
+                    listing_urls, initial_proxy, domain, metrics
+                )
+                
+                # Save extracted data
+                await self._save_extracted_data(domain, successful_extractions)
+                
+                results[domain.replace('https://', '').replace('www.', '').replace('/', '')] = {
+                    'listings_extracted': successful_extractions,
+                    'captcha_blocked': metrics.captcha_blocked,
+                    'captcha_type': metrics.captcha_type,
+                    'errors': metrics.errors
+                }
+                
+            except Exception as e:
+                print(f"[!] Error processing domain {domain}: {e}")
+                results[domain.replace('https://', '').replace('www.', '').replace('/', '')] = {
+                    'listings_extracted': 0,
+                    'captcha_blocked': True,
+                    'captcha_type': 'error',
+                    'errors': [str(e)]
+                }
+        
+        return results
     
     def detect_captcha(self, driver) -> Tuple[bool, str, float]:
         """Detect captcha/blocking with confidence scoring"""
@@ -81,7 +129,7 @@ class SeleniumTestCrawler(SeleniumTestFramework):
             url_lower = url.lower() if url else ""
             
             # Check for very short pages (likely captcha/block pages)
-            if len(html) < 2000:  # Only check very short pages
+            if len(html) < 2000:
                 captcha_indicators = [
                     'cmsg', 'cfasync', 'datadome', 'cloudflare', 'recaptcha', 'hcaptcha',
                     'verify', 'human', 'robot', 'blocked', 'access denied'
@@ -90,10 +138,8 @@ class SeleniumTestCrawler(SeleniumTestFramework):
                 captcha_found = any(indicator in text for indicator in captcha_indicators)
                 
                 if captcha_found:
-                    print(f"[DEBUG] Captcha indicators found in short page: {captcha_found}")
                     return True, "generic_block", 0.9
                 else:
-                    print(f"[DEBUG] Short page but no captcha indicators found")
                     return True, "generic_block", 0.7
             
             # Score each captcha type
@@ -142,143 +188,143 @@ class SeleniumTestCrawler(SeleniumTestFramework):
             print(f"[!] Error detecting captcha: {e}")
             return False, "none", 0.0
     
-    def _run_single_test(self, domain: str, initial_proxy: str):
-        """Run single domain test with Selenium"""
+    async def _extract_all_listing_urls(self, domain: str, proxy: str, retry_count: int = 0) -> List[str]:
+        """Extract all listing URLs from all pages using HTML parsing with proxy rotation"""
         driver = None
-        metrics = self.create_metrics(domain, initial_proxy, "selenium")
-        current_proxy = initial_proxy
+        all_urls = []
+        max_retries = 3  # Maximum retry attempts
         
         try:
-            print(f"\n[+] Starting Selenium test for {domain} with proxy {current_proxy}")
-            print(f"[+] Step 1: Setting up Chrome driver...")
+            print(f"[+] Step 1: Extracting listing URLs from inventory page...")
+            print(f"[+] Using proxy: {proxy}")
+            if retry_count > 0:
+                print(f"[+] Retry attempt {retry_count}/{max_retries}")
             
             # Setup driver
-            driver = self._setup_driver(current_proxy)
-            print(f"[+] Step 2: Chrome driver setup complete")
-            metrics.detailed_timings['driver_setup'] = time.time() - metrics.start_time
+            driver = self._setup_driver(proxy)
+            if not driver:
+                raise Exception("Failed to setup driver")
             
             # Navigate to domain
-            print(f"[+] Step 3: Navigating to {domain}...")
-            nav_start = time.time()
+            print(f"[+] Quick page load check...")
             driver.get(domain)
-            print(f"[+] Step 4: Navigation complete, waiting for page load...")
-            self._random_delay(2, 4)
-            metrics.detailed_timings['initial_navigation'] = time.time() - nav_start
+            
+            # ADVANCED HUMAN BEHAVIOR SIMULATION - Match nodriver effectiveness
+            await self._simulate_human_behavior(driver)
+            
+            # Browser startup delay (same as nodriver)
+            startup_delay = random.uniform(3.0, 8.0)
+            print(f"[DEBUG] Browser startup delay: {startup_delay:.1f}s to avoid detection...")
+            await asyncio.sleep(startup_delay)
             
             # Check for captcha on homepage
-            print(f"[+] Step 5: Checking for captcha...")
             html = driver.page_source
             page_title = driver.title
+            print(f"[+] Document ready state: loading")
+            print(f"[+] Final document ready state: loading")
             print(f"[+] Page title: {page_title}")
             print(f"[+] HTML length: {len(html)} characters")
-            is_blocked, captcha_type, confidence = self.detect_captcha(driver)
             
+            is_blocked, captcha_type, confidence = self.detect_captcha(driver)
             if is_blocked:
                 print(f"[!] Captcha detected on homepage: {captcha_type} (confidence: {confidence:.2f})")
-                metrics.captcha_blocked = True
-                metrics.captcha_type = captcha_type
-                metrics.blocked_at_listing = 0
-                return
+                
+                # Clean up current driver
+                try:
+                    driver.quit()
+                except:
+                    pass
+                
+                # Try proxy rotation (same as nodriver)
+                if retry_count < max_retries:
+                    new_proxy = self.proxy_manager.rotate_proxy(proxy)
+                    if new_proxy and new_proxy != proxy:
+                        print(f"[+] Rotating to new proxy: {new_proxy}")
+                        await asyncio.sleep(random.uniform(2.0, 5.0))  # Delay before retry
+                        
+                        # Retry with new proxy
+                        return await self._extract_all_listing_urls(domain, new_proxy, retry_count + 1)
+                    else:
+                        print(f"[!] No more proxies available, trying same proxy again...")
+                        await asyncio.sleep(random.uniform(5.0, 10.0))  # Longer delay
+                        return await self._extract_all_listing_urls(domain, proxy, retry_count + 1)
+                else:
+                    print(f"[!] Maximum retry attempts ({max_retries}) reached")
+                    return []
             
-            # Try to navigate to inventory
+            print(f"[+] No captcha detected on homepage")
+            
+            # Find and click inventory link
+            print(f"[+] Looking for inventory links on {domain}")
+            await self._simulate_human_behavior(driver)
             inventory_found = self._find_and_click_inventory_link(driver)
             if inventory_found:
-                self._random_delay(2, 4)
-                metrics.pages_crawled += 1
+                print(f"[+] Inventory link found and clicked")
+                await self._human_like_delay()
+            else:
+                print(f"[!] No inventory link found, using current page")
             
-            # Start crawling listings
-            crawl_start = time.time()
-            listings_crawled = 0
+            print(f"[+] Extracting listing URLs from inventory page...")
             
-            while listings_crawled < self.max_listings:
-                try:
-                    # Find listings on current page
-                    listings = self._find_vehicle_listings(driver, domain)
+            # Extract URLs from all pages
+            current_page = 1
+            total_pages = 1
+            
+            while current_page <= total_pages:
+                print(f"[+] Extracting URLs from page {current_page}...")
+                
+                # Human-like pause before extraction
+                await asyncio.sleep(random.uniform(1, 3))
+                
+                # Scroll to top of page
+                driver.execute_script("window.scrollTo(0, 0);")
+                await asyncio.sleep(0.5)
+                
+                # Extract URLs from current page using HTML parsing
+                page_urls = self._extract_listing_urls_from_single_page(driver, domain)
+                print(f"[+] Page {current_page}: Found {len(page_urls)} URLs (Total so far: {len(all_urls) + len(page_urls)})")
+                
+                all_urls.extend(page_urls)
+                
+                # Parse pagination info to determine total pages
+                if current_page == 1:
+                    pagination_info = self._parse_pagination_info(driver.page_source)
+                    total_pages = pagination_info.get('total_pages', 1)
+                    print(f"[DEBUG] Pagination info: {pagination_info}")
+                
+                # Check if we should continue to next page
+                if current_page < total_pages:
+                    current_page += 1
+                    print(f"[+] Found {total_pages} total pages, navigating to page {current_page}...")
                     
-                    if not listings:
-                        print(f"[!] No more listings found on {domain}")
-                        break
+                    # Construct next page URL
+                    current_url = driver.current_url
+                    if '?' in current_url:
+                        base_url = current_url.split('?')[0]
+                    else:
+                        base_url = current_url
+                    page_url = f"{base_url}?Paging.Page={current_page}"
                     
-                    # Process each listing
-                    for listing_element in listings:
-                        if listings_crawled >= self.max_listings:
-                            break
-                        
-                        try:
-                            # Extract listing data
-                            listing_data = self._extract_vehicle_data(listing_element, domain)
-                            
-                            if listing_data and listing_data.get('raw_text'):
-                                listings_crawled += 1
-                                metrics.listings_extracted += 1
-                                print(f"[+] Extracted listing {listings_crawled}: {listing_data['raw_text'][:100]}...")
-                                
-                                # Check for captcha after each listing
-                                current_html = driver.page_source
-                                current_title = driver.title
-                                is_blocked, captcha_type, confidence = self.detect_captcha(driver)
-                                
-                                if is_blocked:
-                                    print(f"[!] Captcha detected after listing {listings_crawled}: {captcha_type}")
-                                    metrics.captcha_blocked = True
-                                    metrics.captcha_type = captcha_type
-                                    metrics.blocked_at_listing = listings_crawled
-                                    
-                                    # Try proxy rotation
-                                    if current_proxy in metrics.proxies_used:
-                                        metrics.proxies_used.append(current_proxy)
-                                    
-                                    new_proxy = self.proxy_manager.rotate_proxy(current_proxy)
-                                    if new_proxy:
-                                        print(f"[+] Rotating to proxy: {new_proxy}")
-                                        metrics.proxy_rotations += 1
-                                        current_proxy = new_proxy
-                                        
-                                        # Restart with new proxy
-                                        driver.quit()
-                                        driver = self._setup_driver(current_proxy)
-                                        driver.get(domain)
-                                        self._random_delay(2, 4)
-                                        
-                                        # Try to continue from where we left off
-                                        if self._find_and_click_inventory_link(driver):
-                                            self._random_delay(2, 4)
-                                            metrics.pages_crawled += 1
-                                        
-                                        # Reset captcha flag and continue
-                                        metrics.captcha_blocked = False
-                                        metrics.captcha_type = "none"
-                                    else:
-                                        print(f"[!] No more proxies available, stopping crawl")
-                                        break
-                                
-                                # Small delay between listings
-                                self._random_delay(0.5, 1.5)
-                        
-                        except Exception as e:
-                            print(f"[!] Error processing listing: {e}")
-                            metrics.errors.append(f"Listing processing error: {str(e)}")
-                            continue
+                    print(f"[DEBUG] Next page URL: {page_url}")
                     
-                    # Try to navigate to next page if available
-                    if not self._navigate_to_next_page(driver):
-                        print(f"[!] No more pages available on {domain}")
-                        break
+                    # Navigate to next page
+                    driver.get(page_url)
+                    print(f"[DEBUG] Waiting {random.uniform(5, 10):.1f}s for page to load...")
+                    await asyncio.sleep(random.uniform(5, 10))
                     
-                    metrics.pages_crawled += 1
-                    self._random_delay(1, 3)
-                    
-                except Exception as e:
-                    print(f"[!] Error during listing crawl: {e}")
-                    metrics.errors.append(f"Crawl error: {str(e)}")
+                    # Human-like delay between pages
+                    await asyncio.sleep(random.uniform(3, 6))
+                else:
                     break
             
-            metrics.detailed_timings['total_crawl_time'] = time.time() - crawl_start
-            print(f"[+] Completed crawling {domain}: {metrics.listings_extracted} listings in {metrics.detailed_timings['total_crawl_time']:.2f}s")
+            print(f"[+] Completed pagination: Found {len(all_urls)} total URLs across {total_pages} pages")
+            print(f"[+] Successfully extracted {len(all_urls)} listing URLs")
+            
+            return all_urls
             
         except Exception as e:
-            print(f"[!] Fatal error in Selenium test for {domain}: {e}")
-            metrics.errors.append(f"Fatal error: {str(e)}")
+            print(f"[!] Error extracting listing URLs: {e}")
+            return []
         
         finally:
             if driver:
@@ -286,15 +332,340 @@ class SeleniumTestCrawler(SeleniumTestFramework):
                     driver.quit()
                 except:
                     pass
+    
+    def _extract_listing_urls_from_single_page(self, driver, domain: str) -> List[str]:
+        """Extract listing URLs from a single page using HTML parsing"""
+        try:
+            html = driver.page_source
+            urls = []
             
-            # Clean up temporary directories
-            self._cleanup_temp_dirs()
+            # Extract URLs using HTML parsing (same as nodriver)
+            pattern = r'href="(/Inventory/Details/[^"]+)"'
+            matches = re.findall(pattern, html, re.IGNORECASE)
             
-            # Finalize metrics
-            self.finalize_metrics(metrics)
+            for m in matches:
+                # Convert to absolute URL
+                current_url = driver.current_url
+                if '://' in current_url:
+                    base_domain = current_url.split('://')[1].split('/')[0]
+                    abs_url = f"https://{base_domain}{m}" if m.startswith('/') else m
+                else:
+                    abs_url = m
+                
+                if abs_url not in urls:
+                    urls.append(abs_url)
+            
+            print(f"[+] Using HTML parsing to find detail links...")
+            print(f"[+] HTML parsing found {len(urls)} URLs")
+            
+            return urls
+            
+        except Exception as e:
+            print(f"[!] Error extracting URLs from page: {e}")
+            return []
+    
+    def _parse_pagination_info(self, html: str) -> Dict[str, int]:
+        """Parse pagination information from HTML"""
+        try:
+            # Look for "Showing X - Y of Z" pattern
+            pattern = r'Showing\s+(\d+)\s*-\s*(\d+)\s+of\s+(\d+)'
+            match = re.search(pattern, html, re.IGNORECASE)
+            
+            if match:
+                start = int(match.group(1))
+                end = int(match.group(2))
+                total = int(match.group(3))
+                
+                # Calculate total pages (assuming 24 items per page like nodriver)
+                items_per_page = end - start + 1
+                total_pages = (total + items_per_page - 1) // items_per_page
+                
+                return {
+                    'start': start,
+                    'end': end,
+                    'total_records': total,
+                    'total_pages': total_pages,
+                    'current_page': 1
+                }
+            
+            return {'total_pages': 1, 'current_page': 1}
+            
+        except Exception as e:
+            print(f"[!] Error parsing pagination info: {e}")
+            return {'total_pages': 1, 'current_page': 1}
+    
+    async def _process_listings_in_parallel(self, listing_urls: List[str], proxy: str, 
+                                          domain: str, metrics) -> int:
+        """Process multiple listings in parallel with fresh browser sessions"""
+        # Process all listings in batches of 8
+        batch_size = 8
+        total_processed = 0
+        total_successful = 0
+        
+        print(f"[+] Processing {len(listing_urls)} listings in batches of {batch_size} with proxy: {proxy}")
+        
+        for batch_start in range(0, len(listing_urls), batch_size):
+            batch_end = min(batch_start + batch_size, len(listing_urls))
+            batch_urls = listing_urls[batch_start:batch_end]
+            batch_size_actual = len(batch_urls)
+            
+            print(f"[+] Processing batch {batch_start//batch_size + 1}: listings {batch_start+1}-{batch_end} ({batch_size_actual} listings)")
+            
+            tasks = []
+            for i, listing_url in enumerate(batch_urls):
+                listing_num = batch_start + i + 1
+                task = asyncio.create_task(
+                    self._process_single_listing_with_fresh_session(
+                        listing_url, proxy, listing_num, domain, metrics
+                    )
+                )
+                tasks.append(task)
+                
+                if i < batch_size_actual - 1:
+                    await asyncio.sleep(random.uniform(0.5, 2.0))
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            batch_successful = 0
+            for i, result in enumerate(results):
+                listing_num = batch_start + i + 1
+                if isinstance(result, Exception):
+                    print(f"[!] Task {listing_num} failed with exception: {result}")
+                    metrics.errors.append(f"Parallel task {listing_num} error: {str(result)}")
+                elif result:
+                    batch_successful += 1
+                    print(f"[+] Task {listing_num} completed successfully")
+                else:
+                    print(f"[!] Task {listing_num} failed")
+            
+            total_processed += batch_size_actual
+            total_successful += batch_successful
+            
+            print(f"[+] Batch {batch_start//batch_size + 1} completed: {batch_successful}/{batch_size_actual} successful")
+            
+            if batch_end < len(listing_urls):
+                batch_delay = random.uniform(2.0, 5.0)
+                print(f"[DEBUG] Batch delay: {batch_delay:.1f}s before next batch...")
+                await asyncio.sleep(batch_delay)
+        
+        print(f"[+] All parallel processing completed: {total_successful}/{total_processed} successful")
+        return total_successful
+    
+    async def _process_single_listing_with_fresh_session(self, listing_url: str, proxy: str, 
+                                                       listing_num: int, domain: str, metrics) -> bool:
+        """Process a single listing with a fresh browser session"""
+        driver = None
+        
+        try:
+            print(f"[DEBUG] Opening detail page attempt 1/3 with proxy: {proxy}")
+            
+            # Setup fresh driver
+            driver = self._setup_driver(proxy)
+            if not driver:
+                print(f"[!] Failed to setup driver for listing {listing_num}")
+                return False
+            
+            # Navigate to listing
+            driver.get(listing_url)
+            
+            # Wait for page to load with human behavior
+            await asyncio.sleep(random.uniform(5, 10))
+            
+            # Simulate human behavior on detail page
+            await self._simulate_human_behavior(driver)
+            
+            # Additional human-like reading time
+            reading_time = random.uniform(3.0, 8.0)
+            print(f"[DEBUG] Human-like reading time: {reading_time:.1f}s...")
+            await asyncio.sleep(reading_time)
+            
+            # Check for captcha
+            is_blocked, captcha_type, confidence = self.detect_captcha(driver)
+            if is_blocked:
+                print(f"[!] Captcha detected on detail page: {captcha_type} (confidence: {confidence:.2f})")
+                
+                # Try proxy rotation for detail page
+                new_proxy = self.proxy_manager.rotate_proxy(proxy)
+                if new_proxy and new_proxy != proxy:
+                    print(f"[+] Rotating to new proxy for detail page: {new_proxy}")
+                    
+                    # Clean up current driver
+                    try:
+                        driver.quit()
+                    except:
+                        pass
+                    
+                    # Retry with new proxy
+                    return await self._process_single_listing_with_fresh_session(
+                        listing_url, new_proxy, listing_num, domain, metrics
+                    )
+                else:
+                    print(f"[!] No more proxies available for detail page")
+                    return False
+            
+            # Extract vehicle data
+            vehicle_data = self._extract_vehicle_data_from_detail_page(driver, listing_url)
+            
+            if vehicle_data and vehicle_data.get('title'):
+                # Store the extracted data
+                self.extracted_data.append({
+                    'url': listing_url,
+                    'listing_number': listing_num,
+                    'extraction_timestamp': time.time(),
+                    'proxy_used': proxy,
+                    'vehicle_data': vehicle_data
+                })
+                
+                print(f"[+] Extracted data for listing {listing_num}: {vehicle_data['title']}")
+                print(f"[+] Stored vehicle data for listing {listing_num}: {vehicle_data['title']}")
+                return True
+            else:
+                print(f"[!] Failed to extract meaningful data from listing {listing_num}")
+                return False
+                
+        except Exception as e:
+            print(f"[!] Error processing listing {listing_num}: {e}")
+            return False
+        
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
+    
+    def _extract_vehicle_data_from_detail_page(self, driver, url: str) -> Dict[str, Any]:
+        """Extract comprehensive vehicle data from detail page"""
+        try:
+            html = driver.page_source
+            
+            # Initialize vehicle data
+            vehicle_data = {
+                'title': '',
+                'price': '',
+                'mileage': '',
+                'year': '',
+                'make': '',
+                'model': '',
+                'engine': '',
+                'transmission': '',
+                'drivetrain': '',
+                'color': '',
+                'vin': '',
+                'raw_text': html[:1000]  # First 1000 chars for debugging
+            }
+            
+            # Extract title
+            title_patterns = [
+                r'<h1[^>]*>([^<]+)</h1>',
+                r'<title>([^<]+)</title>',
+                r'class="vehicle-title"[^>]*>([^<]+)',
+                r'class="title"[^>]*>([^<]+)'
+            ]
+            
+            for pattern in title_patterns:
+                match = re.search(pattern, html, re.IGNORECASE)
+                if match:
+                    vehicle_data['title'] = match.group(1).strip()
+                    break
+            
+            # Extract price
+            price_patterns = [
+                r'\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)',
+                r'Price[:\s]*\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)',
+                r'class="price"[^>]*>\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)'
+            ]
+            
+            for pattern in price_patterns:
+                match = re.search(pattern, html, re.IGNORECASE)
+                if match:
+                    vehicle_data['price'] = f"${match.group(1)}"
+                    break
+            
+            # Extract mileage (same patterns as nodriver)
+            m = re.search(r'<div class="veh__mileage"[^>]*><span class="mileage__value"[^>]*>([^<]+)</span>\s*miles', html, re.IGNORECASE)
+            if m:
+                vehicle_data['mileage'] = m.group(1).strip()
+            
+            if not vehicle_data['mileage']:
+                mileage_patterns = [
+                    r'<span class="mileage__value"[^>]*>([^<]+)</span>\s*miles',
+                    r'<div[^>]*class="veh__mileage"[^>]*>.*?([0-9]{1,3}(?:,[0-9]{3})+)\s*miles',
+                    r"\b([0-9]{1,3}(?:,[0-9]{3})+)\s*(?:mi|miles?)\b",
+                    r"Mileage[:\s]*([0-9]{1,3}(?:,[0-9]{3})+)\s*(?:mi|miles?)?",
+                    r"Odometer[:\s]*([0-9]{1,3}(?:,[0-9]{3})+)\s*(?:mi|miles?)?",
+                    r"([0-9]{1,3}(?:,[0-9]{3})+)\s*miles?",
+                    r"([0-9]{1,3}(?:,[0-9]{3})+)\s*mi\b"
+                ]
+                for pattern in mileage_patterns:
+                    mm = re.search(pattern, html, re.IGNORECASE)
+                    if mm:
+                        vehicle_data['mileage'] = mm.group(1)
+                        break
+            
+            # Extract VIN (same patterns as nodriver)
+            m = re.search(r'<div class="info__label"[^>]*>VIN</div>\s*<div class="info__data[^>]*>([A-HJ-NPR-Z0-9]{17})</div>', html, re.IGNORECASE)
+            if m:
+                vehicle_data['vin'] = m.group(1)
+            
+            if not vehicle_data['vin']:
+                vin_patterns = [
+                    r"\bVIN[:\s]*([A-HJ-NPR-Z0-9]{17})\b",
+                    r"Vehicle\s+Identification\s+Number[:\s]*([A-HJ-NPR-Z0-9]{17})",
+                    r"VIN\s+Number[:\s]*([A-HJ-NPR-Z0-9]{17})",
+                    r"([A-HJ-NPR-Z0-9]{17})\s*\(VIN\)",
+                    r"VIN[:\s]*([A-HJ-NPR-Z0-9]{17})"
+                ]
+                for pattern in vin_patterns:
+                    mv = re.search(pattern, html, re.IGNORECASE)
+                    if mv:
+                        vin_candidate = mv.group(1)
+                        # Filter out CDN URLs and other false positives
+                        if not any(exclude in vin_candidate.lower() for exclude in ['aceae', 'cdn', 'http', 'jpg', 'png', 'gif']):
+                            vehicle_data['vin'] = vin_candidate
+                            break
+            
+            # Extract year, make, model from title
+            if vehicle_data['title']:
+                title = vehicle_data['title']
+                year_match = re.search(r'\b(19|20)\d{2}\b', title)
+                if year_match:
+                    vehicle_data['year'] = year_match.group()
+                
+                # Extract make and model (basic approach)
+                words = title.split()
+                if len(words) >= 3:
+                    vehicle_data['make'] = words[1] if words[0].isdigit() else words[0]
+                    vehicle_data['model'] = ' '.join(words[2:4]) if len(words) > 2 else words[2]
+            
+            # Extract features (engine, transmission, drivetrain, color)
+            def extract_feature(label: str) -> str:
+                # Try the specific vehicle info section first
+                pat = rf'<div class="info__label"[^>]*>{re.escape(label)}</div>\s*<div class="info__data[^>]*>([^<]+)</div>'
+                mm = re.search(pat, html, re.IGNORECASE)
+                if mm:
+                    return mm.group(1).strip()
+                # Fallback to generic patterns
+                pat2 = rf"<div[^>]*class=\"feature-label\"[^>]*>\s*{re.escape(label)}\s*</div>\s*<div[^>]*class=\"feature-value\"[^>]*>\s*([^<]+)"
+                mm2 = re.search(pat2, html, re.IGNORECASE)
+                return mm2.group(1).strip() if mm2 else ''
+            
+            vehicle_data['engine'] = extract_feature('Engine')
+            vehicle_data['transmission'] = extract_feature('Transmission')
+            vehicle_data['drivetrain'] = extract_feature('Drivetrain')
+            vehicle_data['color'] = extract_feature('Exterior Color')
+            
+            print(f"[+] Extracted data from detail page: {url}")
+            print(f"[+] Extracted vehicle data: {vehicle_data}")
+            
+            return vehicle_data
+            
+        except Exception as e:
+            print(f"[!] Error extracting vehicle data: {e}")
+            return {}
     
     def _setup_driver(self, proxy: str):
-        """Setup undetected Chrome driver with proxy"""
+        """Setup undetected Chrome driver optimized for testing"""
         import tempfile
         import os
         
@@ -302,24 +673,62 @@ class SeleniumTestCrawler(SeleniumTestFramework):
             print(f"[+] Creating Chrome options...")
             options = uc.ChromeOptions()
             
+            # CRITICAL: Never use headless mode for testing - it's a major detection flag
             if self.headless:
-                options.add_argument('--headless')
-                print(f"[+] Running in headless mode")
+                print(f"[!] WARNING: Headless mode detected - this will likely trigger bot detection!")
+                print(f"[!] For testing, consider using headful mode for better stealth")
+                options.add_argument('--headless=new')  # Use new headless mode if absolutely necessary
             
             # Add proxy
             options.add_argument(f'--proxy-server={proxy}')
             print(f"[+] Using proxy: {proxy}")
             
-            # Additional options to avoid detection
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--disable-blink-features=AutomationControlled')
-            options.add_argument('--disable-extensions')
-            options.add_argument('--disable-plugins')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--disable-web-security')
-            options.add_argument('--allow-running-insecure-content')
-            print(f"[+] Chrome options configured")
+            # OPTIMIZED STEALTH OPTIONS - Focus on most effective techniques
+            stealth_options = [
+                # Core stealth options (most important)
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-extensions',
+                '--disable-plugins',
+                '--disable-gpu',
+                '--disable-web-security',
+                '--allow-running-insecure-content',
+                
+                # Performance and stability
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-hang-monitor',
+                '--disable-prompt-on-repost',
+                '--disable-sync',
+                '--disable-default-apps',
+                '--disable-background-networking',
+                '--disable-component-update',
+                '--disable-domain-reliability',
+                '--disable-client-side-phishing-detection',
+                '--disable-popup-blocking',
+                
+                # Window and display options
+                '--start-maximized',
+                '--window-size=1920,1080',
+                '--window-position=0,0',
+                
+                # Additional stealth options
+                '--disable-logging',
+                '--disable-notifications',
+                '--mute-audio',
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--no-pings',
+                '--password-store=basic',
+                '--use-mock-keychain',
+            ]
+            
+            for option in stealth_options:
+                options.add_argument(option)
+            
+            print(f"[+] Chrome options configured with {len(stealth_options)} optimized stealth options")
             
             # Create unique user data directory for each instance
             user_data_dir = tempfile.mkdtemp(prefix='chrome_selenium_')
@@ -327,37 +736,128 @@ class SeleniumTestCrawler(SeleniumTestFramework):
             options.add_argument(f'--user-data-dir={user_data_dir}')
             print(f"[+] User data directory: {user_data_dir}")
             
-            # Random user agent
+            # REALISTIC USER AGENT ROTATION - Focus on most common ones
             user_agents = [
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                # Windows Chrome (most common - 70% of users)
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+                
+                # macOS Chrome (20% of users)
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+                
+                # Linux Chrome (10% of users)
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
             ]
-            options.add_argument(f'--user-agent={random.choice(user_agents)}')
+            
+            selected_ua = random.choice(user_agents)
+            options.add_argument(f'--user-agent={selected_ua}')
+            print(f"[+] Using user agent: {selected_ua[:50]}...")
+            
+            # SIMPLIFIED PREFERENCES - Focus on essential settings
+            prefs = {
+                "profile.default_content_setting_values": {
+                    "notifications": 2,
+                    "geolocation": 2,
+                    "media_stream": 2,
+                },
+                "profile.default_content_settings.popups": 0,
+                "profile.managed_default_content_settings.images": 1,
+            }
+            options.add_experimental_option("prefs", prefs)
             
             # Use Chrome version 139 to match installed Chrome
             print(f"[+] Starting Chrome with version 139...")
             driver = uc.Chrome(options=options, version_main=139)
             print(f"[+] Chrome started successfully!")
             
-            # Execute script to remove webdriver property
-            print(f"[+] Removing webdriver property...")
-            driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            print(f"[+] Webdriver property removed")
+            # ESSENTIAL STEALTH SCRIPTS - Focus on most critical ones
+            essential_stealth_scripts = [
+                # Remove webdriver property (most critical)
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})",
+                
+                # Remove automation indicators
+                "delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array",
+                "delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise",
+                "delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol",
+                
+                # Mock chrome runtime (critical for detection)
+                "window.chrome = {runtime: {}, loadTimes: function() {}, csi: function() {}, app: {}}",
+                
+                # Mock permissions API
+                "const originalQuery = window.navigator.permissions.query; window.navigator.permissions.query = (parameters) => (parameters.name === 'notifications' ? Promise.resolve({ state: Notification.permission }) : originalQuery(parameters))",
+                
+                # Mock screen properties
+                "Object.defineProperty(screen, 'availHeight', {get: () => 1040})",
+                "Object.defineProperty(screen, 'availWidth', {get: () => 1920})",
+                "Object.defineProperty(screen, 'colorDepth', {get: () => 24})",
+                "Object.defineProperty(screen, 'pixelDepth', {get: () => 24})",
+                
+                # Mock timezone
+                "Object.defineProperty(Intl.DateTimeFormat.prototype, 'resolvedOptions', {value: function() {return {timeZone: 'America/New_York'}}})",
+                
+                # Mock hardware concurrency
+                "Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 4})",
+                
+                # Mock device memory
+                "Object.defineProperty(navigator, 'deviceMemory', {get: () => 8})",
+                
+                # Mock connection
+                "Object.defineProperty(navigator, 'connection', {get: () => ({effectiveType: '4g', rtt: 100, downlink: 10})})",
+                
+                # Mock canvas fingerprinting
+                "const toDataURL = HTMLCanvasElement.prototype.toDataURL; HTMLCanvasElement.prototype.toDataURL = function() {return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';}",
+                
+                # Mock webgl
+                "const getParameter = WebGLRenderingContext.prototype.getParameter; WebGLRenderingContext.prototype.getParameter = function(parameter) {if (parameter === 37445) return 'Intel Inc.'; if (parameter === 37446) return 'Intel(R) Iris(TM) Graphics 6100'; return getParameter(parameter);}",
+                
+                # Final webdriver removal
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})",
+            ]
+            
+            print(f"[+] Executing {len(essential_stealth_scripts)} essential stealth scripts...")
+            successful_scripts = 0
+            for i, script in enumerate(essential_stealth_scripts):
+                try:
+                    driver.execute_script(script)
+                    successful_scripts += 1
+                    if i < 3:  # Only log first few
+                        print(f"[+] Stealth script {i+1} executed")
+                except Exception as e:
+                    if i < 5:  # Only log first few failures
+                        print(f"[!] Stealth script {i+1} failed: {e}")
+            
+            print(f"[+] Stealth scripts completed: {successful_scripts}/{len(essential_stealth_scripts)} successful")
             
             return driver
             
         except Exception as e:
             print(f"[!] Failed to setup driver: {e}")
-            raise
-    
-    def _random_delay(self, min_seconds: float = 1, max_seconds: float = 3):
-        """Add random delay to avoid detection"""
-        delay = random.uniform(min_seconds, max_seconds)
-        time.sleep(delay)
+            return None
     
     def _find_and_click_inventory_link(self, driver) -> bool:
         """Find and click on inventory/vehicles navigation links"""
+        print(f"[+] QUICK SEARCH for inventory links...")
+        print(f"[+] Method 1: Trying quick CSS selectors...")
+        
+        # Try cars-for-sale selector first (most common)
+        try:
+            print(f"[+] Trying selector: a[href*='cars-for-sale']")
+            elements = driver.find_elements(By.CSS_SELECTOR, "a[href*='cars-for-sale']")
+            if elements:
+                print(f"[+] Found {len(elements)} elements with selector: a[href*='cars-for-sale']")
+                # Scroll to element and click
+                driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", elements[0])
+                time.sleep(random.uniform(0.5, 1))
+                elements[0].click()
+                print(f"[+] SUCCESS: Clicked via selector a[href*='cars-for-sale']")
+                return True
+        except Exception as e:
+            print(f"[!] Error with cars-for-sale selector: {e}")
+        
+        # Fallback to keyword-based search
         for keyword in self.inventory_keywords:
             try:
                 # Try multiple approaches to find inventory links
@@ -374,10 +874,10 @@ class SeleniumTestCrawler(SeleniumTestFramework):
                         if elements:
                             print(f"[+] Found inventory link with keyword: {keyword}")
                             # Scroll to element and click
-                            driver.execute_script("arguments[0].scrollIntoView(true);", elements[0])
-                            self._random_delay(0.5, 1)
+                            driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", elements[0])
+                            time.sleep(random.uniform(0.5, 1))
                             elements[0].click()
-                            self._random_delay(2, 4)
+                            time.sleep(random.uniform(2, 4))
                             return True
                     except:
                         continue
@@ -387,117 +887,85 @@ class SeleniumTestCrawler(SeleniumTestFramework):
                 
         return False
     
-    def _find_vehicle_listings(self, driver, site_name: str) -> List[Any]:
-        """Find vehicle listings using multiple strategies"""
-        listings = []
-        
-        # Try specific selectors
-        for selector in self.listing_selectors:
-            try:
-                elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                if elements:
-                    print(f"[+] Found {len(elements)} listings with selector: {selector}")
-                    return elements[:10]  # Limit to first 10 for performance
-            except:
-                continue
-        
-        # Fallback to content-based search
-        if not listings:
-            try:
-                xpath_patterns = [
-                    "//*[contains(text(), '$') and contains(text(), 'miles')]",
-                    "//*[contains(text(), '2024') or contains(text(), '2023') or contains(text(), '2022')]",
-                    "//*[contains(text(), 'Ford') or contains(text(), 'Chevrolet') or contains(text(), 'Mazda')]"
-                ]
-                
-                for pattern in xpath_patterns:
-                    try:
-                        elements = driver.find_elements(By.XPATH, pattern)
-                        if elements:
-                            return elements[:10]
-                    except:
-                        continue
-            except:
-                pass
-        
-        return listings
-    
-    def _extract_vehicle_data(self, element, site_name: str) -> Optional[Dict[str, Any]]:
-        """Extract vehicle information from a listing element"""
+    async def _save_extracted_data(self, domain: str, successful_extractions: int):
+        """Save extracted vehicle data to JSON file"""
         try:
-            element_text = element.text.strip() if element.text else ''
+            if not self.extracted_data:
+                print(f"[!] No data to save for {domain}")
+                return
             
-            if not element_text or len(element_text) < 10:
-                return None
+            # Create extracted_data directory if it doesn't exist
+            os.makedirs('extracted_data', exist_ok=True)
             
-            vehicle_data = {
-                'site': site_name,
-                'timestamp': time.time(),
-                'raw_text': element_text,
-                'extracted_data': {}
+            # Generate filename
+            domain_clean = domain.replace('https://', '').replace('www.', '').replace('/', '')
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"vehicles_{domain_clean}_{timestamp}.json"
+            filepath = os.path.join('extracted_data', filename)
+            
+            # Prepare data for JSON
+            json_data = {
+                'domain': domain,
+                'extraction_timestamp': time.time(),
+                'total_vehicles': len(self.extracted_data),
+                'vehicles': self.extracted_data
             }
             
-            text = element_text.lower()
+            # Save to file
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(json_data, f, indent=2, ensure_ascii=False)
             
-            # Extract year
-            year_match = re.search(r'\b(19|20)\d{2}\b', text)
-            if year_match:
-                vehicle_data['extracted_data']['year'] = year_match.group()
-            
-            # Extract price
-            price_match = re.search(r'\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', text)
-            if price_match:
-                vehicle_data['extracted_data']['price'] = price_match.group(1)
-            
-            # Extract mileage
-            mileage_match = re.search(r'(\d{1,3}(?:,\d{3})*)\s*miles?', text)
-            if mileage_match:
-                vehicle_data['extracted_data']['mileage'] = mileage_match.group(1)
-            
-            # Extract make/model (basic approach)
-            make_model_match = re.search(r'([a-z]+)\s+([a-z]+)', text)
-            if make_model_match:
-                vehicle_data['extracted_data']['make'] = make_model_match.group(1)
-                vehicle_data['extracted_data']['model'] = make_model_match.group(2)
-            
-            return vehicle_data
+            print(f"[+] Saved {len(self.extracted_data)} vehicles to {filepath}")
             
         except Exception as e:
-            print(f"[!] Error extracting vehicle data: {e}")
-            return None
+            print(f"[!] Error saving extracted data: {e}")
     
-    def _navigate_to_next_page(self, driver) -> bool:
-        """Try to navigate to next page of listings"""
+    async def _simulate_human_behavior(self, driver):
+        """Optimized human behavior simulation for testing"""
         try:
-            # Common next page selectors
-            next_selectors = [
-                "//a[contains(text(), 'Next')]",
-                "//a[contains(text(), '>')]",
-                "//a[contains(@class, 'next')]",
-                "//a[contains(@class, 'pagination-next')]",
-                ".pagination-next",
-                ".next-page"
-            ]
+            print(f"[DEBUG] Simulating human behavior...")
             
-            for selector in next_selectors:
-                try:
-                    if selector.startswith("//"):
-                        elements = driver.find_elements(By.XPATH, selector)
-                    else:
-                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                    
-                    if elements and elements[0].is_enabled():
-                        elements[0].click()
-                        self._random_delay(2, 4)
-                        return True
-                except:
-                    continue
+            # Light mouse movements (less aggressive for testing)
+            for _ in range(random.randint(1, 3)):
+                x = random.randint(200, 600)
+                y = random.randint(200, 400)
+                driver.execute_script(f"""
+                    const event = new MouseEvent('mousemove', {{
+                        clientX: {x},
+                        clientY: {y}
+                    }});
+                    document.dispatchEvent(event);
+                """)
+                await asyncio.sleep(random.uniform(0.1, 0.2))
             
-            return False
+            # Light scrolling
+            for _ in range(random.randint(1, 2)):
+                scroll_amount = random.randint(-100, 100)
+                driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
+                await asyncio.sleep(random.uniform(0.2, 0.4))
+            
+            # Basic page interactions
+            driver.execute_script("""
+                // Simulate focus events
+                window.dispatchEvent(new Event('focus'));
+                document.dispatchEvent(new Event('visibilitychange'));
+            """)
+            
+            # Shorter reading time for testing
+            reading_delay = random.uniform(0.5, 1.5)
+            print(f"[DEBUG] Human-like reading time: {reading_delay:.1f}s...")
+            await asyncio.sleep(reading_delay)
+            
+            print(f"[DEBUG] Human behavior simulation completed")
             
         except Exception as e:
-            print(f"[!] Error navigating to next page: {e}")
-            return False
+            print(f"[!] Error in human behavior simulation: {e}")
+    
+    async def _human_like_delay(self):
+        """Human-like delay between actions (optimized for testing)"""
+        delay = random.uniform(1.0, 3.0)  # Shorter delays for testing
+        print(f"[DEBUG] Human-like delay: {delay:.1f}s")
+        await asyncio.sleep(delay)
     
     def _cleanup_temp_dirs(self):
         """Clean up temporary directories"""
